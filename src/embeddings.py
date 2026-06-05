@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 
 LOCAL_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_PROVIDER_ENV = "EMBEDDING_PROVIDER"
+OPENROUTER_EMBEDDING_MODEL = "openai/text-embedding-3-small"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class MockEmbedder:
@@ -46,12 +49,51 @@ class LocalEmbedder:
 class OpenAIEmbedder:
     """OpenAI embeddings API-backed embedder."""
 
-    def __init__(self, model_name: str = OPENAI_EMBEDDING_MODEL) -> None:
+    def __init__(self, model_name: str = OPENAI_EMBEDDING_MODEL, api_key: str | None = None) -> None:
+        from openai import OpenAI
+
+        api_key = api_key or os.getenv("OPENAI_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "")
+        base_url = None
+
+        # If the key is from OpenRouter, switch to the OpenRouter endpoint and
+        # use the OpenAI-compatible model namespace.
+        if api_key.startswith("sk-or-"):
+            base_url = OPENROUTER_BASE_URL
+            if not model_name.startswith("openai/"):
+                model_name = f"openai/{model_name}"
+
+        self.model_name = model_name
+        self._backend_name = model_name
+        self.client = OpenAI(api_key=api_key if api_key else None, base_url=base_url)
+
+    def __call__(self, text: str) -> list[float]:
+        response = self.client.embeddings.create(model=self.model_name, input=text)
+        return [float(value) for value in response.data[0].embedding]
+
+
+class OpenRouterEmbedder:
+    """OpenRouter embeddings API-backed embedder using the OpenAI-compatible SDK."""
+
+    def __init__(
+        self,
+        model_name: str = OPENROUTER_EMBEDDING_MODEL,
+        api_key: str | None = None,
+        base_url: str = OPENROUTER_BASE_URL,
+        app_title: str | None = None,
+        app_url: str | None = None,
+    ) -> None:
         from openai import OpenAI
 
         self.model_name = model_name
         self._backend_name = model_name
-        self.client = OpenAI()
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers={
+                **({"HTTP-Referer": app_url} if app_url else {}),
+                **({"X-OpenRouter-Title": app_title} if app_title else {}),
+            },
+        )
 
     def __call__(self, text: str) -> list[float]:
         response = self.client.embeddings.create(model=self.model_name, input=text)
